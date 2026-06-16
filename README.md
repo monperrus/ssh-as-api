@@ -178,6 +178,16 @@ SSHFP record: example.com. IN SSHFP 3 2 <hash>
 
 See [main.go](main.go) in this repository for a working implementation covering all three access modes, shell mode, and argument parsing.
 
+## Deep Packet Inspection
+
+Some networks (corporate firewalls, certain hosting providers) run Deep Packet Inspection that detects the SSH protocol signature and blocks it on any port other than 22. Symptoms: `nc` can reach the server and read the banner (`SSH-2.0-...`), but the SSH client hangs with "Connection timed out during banner exchange" — the DPI lets the TCP handshake and the server's opening banner through, then drops the client's response when it recognises the SSH version string.
+
+Mitigations:
+
+- **Use port 22** — universally allowed, but requires sharing it with the system sshd (e.g. via `sslh`).
+- **Wrap in TLS on port 443** — use `stunnel` on both ends, or a reverse proxy with stream support. DPI sees HTTPS.
+- **SSH jump host** — if you already have SSH access on port 22, tunnel through it: `ssh -J user@host -p <api-port> user@localhost <cmd>`.
+
 ## When to Choose SSH over HTTP
 
 - Your users are developers who already manage SSH keys
