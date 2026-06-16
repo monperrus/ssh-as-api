@@ -174,96 +174,9 @@ SSHFP record: example.com. IN SSHFP 3 2 <hash>
 | Scripting | `ssh host cmd \| grep \| jq` | curl + jq |
 | Binary payloads | Trivial (stdin/stdout) | Multipart, base64 |
 
-## Minimal Go Implementation
+## Implementation
 
-```go
-package main
-
-import (
-    "crypto/rand"
-    "crypto/rsa"
-    "encoding/binary"
-    "fmt"
-    "io"
-    "log"
-    "net"
-
-    "golang.org/x/crypto/ssh"
-)
-
-func main() {
-    hostKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-    signer, _ := ssh.NewSignerFromKey(hostKey)
-
-    cfg := &ssh.ServerConfig{
-        NoClientAuth: true, // anonymous mode; replace with PublicKeyCallback for auth
-    }
-    cfg.AddHostKey(signer)
-
-    ln, _ := net.Listen("tcp", ":2222")
-    for {
-        conn, _ := ln.Accept()
-        go serve(conn, cfg)
-    }
-}
-
-func serve(conn net.Conn, cfg *ssh.ServerConfig) {
-    sc, chans, reqs, err := ssh.NewServerConn(conn, cfg)
-    if err != nil { return }
-    defer sc.Close()
-    go ssh.DiscardRequests(reqs)
-    for nc := range chans {
-        if nc.ChannelType() != "session" {
-            nc.Reject(ssh.UnknownChannelType, "")
-            continue
-        }
-        go handleSession(nc, sc.Permissions)
-    }
-}
-
-func handleSession(nc ssh.NewChannel, perms *ssh.Permissions) {
-    ch, reqs, _ := nc.Accept()
-    defer ch.Close()
-    for req := range reqs {
-        switch req.Type {
-        case "exec":
-            req.Reply(true, nil)
-            cmd, args := parsePayload(req.Payload)
-            code := dispatch(cmd, args, perms, ch)
-            sendExit(ch, uint32(code))
-            return
-        default:
-            req.Reply(false, nil)
-        }
-    }
-}
-
-func dispatch(cmd string, args []string, perms *ssh.Permissions, ch ssh.Channel) int {
-    switch cmd {
-    case "hello":
-        fmt.Fprintln(ch, "Hello, World!")
-        return 0
-    default:
-        fmt.Fprintf(ch.Stderr(), "unknown command: %q\n", cmd)
-        return 127
-    }
-}
-
-func parsePayload(p []byte) (string, []string) {
-    if len(p) < 4 { return "", nil }
-    n := binary.BigEndian.Uint32(p[:4])
-    s := string(p[4 : 4+n])
-    parts := strings.Fields(s)
-    if len(parts) == 0 { return "", nil }
-    return parts[0], parts[1:]
-}
-
-func sendExit(ch ssh.Channel, code uint32) {
-    payload := make([]byte, 4)
-    binary.BigEndian.PutUint32(payload, code)
-    ch.SendRequest("exit-status", false, payload)
-}
-```
+See [main.go](main.go) in this repository for a working implementation covering all three access modes, shell mode, and argument parsing.
 
 ## When to Choose SSH over HTTP
 
