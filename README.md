@@ -178,6 +178,64 @@ SSHFP record: example.com. IN SSHFP 3 2 <hash>
 
 See [main.go](main.go) in this repository for a working implementation covering all three access modes, shell mode, and argument parsing.
 
+## Sharing Port 22 with the System sshd
+
+Running the SSH API server on a non-standard port exposes it to Deep Packet Inspection (see below). The alternative is to share port 22 with the existing system sshd using `ForceCommand`.
+
+Add a dedicated system user (e.g. `api`) and in `/etc/ssh/sshd_config`:
+
+```
+Match User api
+    ForceCommand /usr/local/bin/api-dispatcher
+    AllowTcpForwarding no
+    PermitTTY no
+```
+
+The dispatcher binary reads `$SSH_ORIGINAL_COMMAND` for the requested command. Authentication (public key) is handled entirely by sshd.
+
+### Key-based access control under ForceCommand
+
+sshd does not pass the authenticated key to `ForceCommand` by default. Two approaches to recover per-key roles:
+
+**Option A — `command=` per key in `authorized_keys` (no root needed)**
+
+Embed the role directly in each key's `authorized_keys` entry:
+
+```
+command="ROLE=anon  /usr/local/bin/api-dispatcher",no-pty,no-port-forwarding ssh-rsa   AAAA... alice
+command="ROLE=user  /usr/local/bin/api-dispatcher",no-pty,no-port-forwarding ssh-rsa   AAAA... bob
+command="ROLE=admin /usr/local/bin/api-dispatcher",no-pty,no-port-forwarding ssh-ed25519 AAAA... martin
+```
+
+The dispatcher reads `$ROLE` and `$SSH_ORIGINAL_COMMAND`:
+
+```go
+role := os.Getenv("ROLE")
+cmd  := os.Getenv("SSH_ORIGINAL_COMMAND")
+os.Exit(dispatch(cmd, role, os.Stdout, os.Stderr))
+```
+
+**Option B — `ExposeAuthInfo yes` in sshd_config (OpenSSH 7.9+, requires root)**
+
+Add to `/etc/ssh/sshd_config`:
+
+```
+ExposeAuthInfo yes
+```
+
+sshd writes the authenticated key's fingerprint to a temporary file and sets `$SSH_USER_AUTH` to its path. The dispatcher reads it and maps fingerprint → role internally, keeping all access-control logic in the binary:
+
+```go
+data, _ := os.ReadFile(os.Getenv("SSH_USER_AUTH"))
+// file contains e.g.: "publickey ssh-rsa SHA256:abc123..."
+fp   := strings.Fields(string(data))[2]
+role := fingerprintToRole(fp)   // map defined in the binary
+cmd  := os.Getenv("SSH_ORIGINAL_COMMAND")
+os.Exit(dispatch(cmd, role, os.Stdout, os.Stderr))
+```
+
+Option A suits setups where you don't control `sshd_config`. Option B keeps the role mapping inside the binary, matching the logic of a standalone SSH server.
+
 ## Deep Packet Inspection
 
 Some networks (corporate firewalls, certain hosting providers) run Deep Packet Inspection that detects the SSH protocol signature and blocks it on any port other than 22. Symptoms: `nc` can reach the server and read the banner (`SSH-2.0-...`), but the SSH client hangs with "Connection timed out during banner exchange" — the DPI lets the TCP handshake and the server's opening banner through, then drops the client's response when it recognises the SSH version string.
