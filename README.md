@@ -223,16 +223,28 @@ Add to `/etc/ssh/sshd_config`:
 ExposeAuthInfo yes
 ```
 
-sshd writes the authenticated key's fingerprint to a temporary file and sets `$SSH_USER_AUTH` to its path. The dispatcher reads it and maps fingerprint → role internally, keeping all access-control logic in the binary:
+sshd writes the authenticated key to a temporary file and sets `$SSH_USER_AUTH` to its path. The dispatcher reads it and maps fingerprint → role internally, keeping all access-control logic in the binary.
+
+> **Gotcha: the file contains the raw public key, not the fingerprint.**
+>
+> The actual file format is:
+> ```
+> publickey ssh-rsa AAAAB3NzaC1yc2EAAA...
+> ```
+> The third field is the base64-encoded public key blob, **not** a `SHA256:...` fingerprint string. You must parse the key and compute the fingerprint yourself:
 
 ```go
 data, _ := os.ReadFile(os.Getenv("SSH_USER_AUTH"))
-// file contains e.g.: "publickey ssh-rsa SHA256:abc123..."
-fp   := strings.Fields(string(data))[2]
-role := fingerprintToRole(fp)   // map defined in the binary
+// fields: ["publickey", "<type>", "<base64-key>"]
+fields := strings.Fields(string(data))
+pub, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(fields[1] + " " + fields[2]))
+fp   := ssh.FingerprintSHA256(pub)   // now a "SHA256:..." string
+role := fingerprintToRole(fp)
 cmd  := os.Getenv("SSH_ORIGINAL_COMMAND")
 os.Exit(dispatch(cmd, role, os.Stdout, os.Stderr))
 ```
+
+See [cmd/dispatcher/main.go](cmd/dispatcher/main.go) for the full working implementation.
 
 Option A suits setups where you don't control `sshd_config`. Option B keeps the role mapping inside the binary, matching the logic of a standalone SSH server.
 
